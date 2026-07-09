@@ -201,11 +201,14 @@ function MapInitializer({
 
     useEffect(()=>{
 
-        mapRef.current=map;
+        try {
+            mapRef.current=map;
+            setBounds(map.getBounds());
+        } catch (error) {
+            console.error('Error initializing map:', error);
+        }
 
-        setBounds(map.getBounds());
-
-    },[map,setBounds]);
+    },[map]);
 
     return null;
 
@@ -260,6 +263,12 @@ const InteractiveMap: React.FC<InteractiveMapProps> = ({
     initialZoom = 6,
 }) => {
 
+    if(typeof window==="undefined"){
+
+        return null;
+
+    }
+
     const mapRef = useRef<LeafletMap | null>(null);
 
     const [bounds, setBounds] =
@@ -286,9 +295,13 @@ const updateBounds = useCallback(() => {
 
     if (!mapRef.current) return;
 
-    setBounds(
-        mapRef.current.getBounds()
-    );
+    try {
+        setBounds(
+            mapRef.current.getBounds()
+        );
+    } catch (error) {
+        console.error('Error updating bounds:', error);
+    }
 
 }, []);
 
@@ -326,7 +339,9 @@ const contextValue = useMemo(() => ({
 
     bounds,
 
-    layers
+    layers,
+
+    setLayers
 
 ]);
 
@@ -374,25 +389,23 @@ const fitToIndonesia = useCallback(() => {
 
     if (!mapRef.current) return;
 
-    mapRef.current.fitBounds([
-        [-11.2, 94.7],
-        [6.3, 141.1],
-    ]);
-
-}, []);
-
-const fitToIndonesia = useCallback(() => {
-
-    if (!mapRef.current) return;
-
-    mapRef.current.fitBounds([
-        [-11.2, 94.7],
-        [6.3, 141.1],
-    ]);
+    try {
+        mapRef.current.fitBounds([
+            [-11.2, 94.7],
+            [6.3, 141.1],
+        ]);
+    } catch (error) {
+        console.error('Error fitting bounds to Indonesia:', error);
+    }
 
 }, []);
 
 const toggleFullscreen = useCallback(() => {
+
+    if (!document.fullscreenEnabled) {
+        console.warn('Fullscreen API is not supported in this browser');
+        return;
+    }
 
     const element = document.documentElement;
 
@@ -410,58 +423,68 @@ const toggleFullscreen = useCallback(() => {
 
 useEffect(() => {
 
+    let debounceTimer: NodeJS.Timeout | null = null;
+
     const handler = (e: KeyboardEvent) => {
-
-        if (e.key === "f") {
-
-            toggleFullscreen();
-
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+            return;
         }
 
-        if (e.key === "h") {
-
-            setLayers((prev) => ({
-                ...prev,
-                heatmap: !prev.heatmap,
-            }));
-
+        if (debounceTimer) {
+            clearTimeout(debounceTimer);
         }
 
-        if (e.key === "c") {
+        debounceTimer = setTimeout(() => {
+            if (e.key === "f") {
+                toggleFullscreen();
+            }
 
-            setLayers((prev) => ({
-                ...prev,
-                cluster: !prev.cluster,
-            }));
+            if (e.key === "h") {
+                setLayers((prev) => ({
+                    ...prev,
+                    heatmap: !prev.heatmap,
+                }));
+            }
 
-        }
+            if (e.key === "c") {
+                setLayers((prev) => ({
+                    ...prev,
+                    cluster: !prev.cluster,
+                }));
+            }
 
-        if (e.key === "m") {
+            if (e.key === "m") {
+                setLayers((prev) => ({
+                    ...prev,
+                    marker: !prev.marker,
+                }));
+            }
 
-            setLayers((prev) => ({
-                ...prev,
-                marker: !prev.marker,
-            }));
-
-        }
-
-        if (e.key === "i") {
-
-            fitToIndonesia();
-
-        }
-
+            if (e.key === "i") {
+                fitToIndonesia();
+            }
+        }, 100);
     };
 
     window.addEventListener("keydown", handler);
 
-    return () => window.removeEventListener("keydown", handler);
+    return () => {
+        if (debounceTimer) {
+            clearTimeout(debounceTimer);
+        }
+        window.removeEventListener("keydown", handler);
+    };
 
-}, [fitToIndonesia, toggleFullscreen]);
+}, [fitToIndonesia, toggleFullscreen, setLayers]);
 
 useEffect(() => {
 
     if (!mapRef.current) return;
+
+    if (typeof ResizeObserver === 'undefined') {
+        console.warn('ResizeObserver is not supported in this browser');
+        return;
+    }
 
     const observer = new ResizeObserver(() => {
 
@@ -469,25 +492,12 @@ useEffect(() => {
 
     });
 
-    observer.observe(document.body);
+    const mapContainer = mapRef.current.getContainer();
+    if (mapContainer) {
+        observer.observe(mapContainer);
+    }
 
     return () => observer.disconnect();
-
-}, []);
-
-useEffect(() => {
-
-    const interval = setInterval(() => {
-
-        if (mapRef.current) {
-
-            setBounds(mapRef.current.getBounds());
-
-        }
-
-    }, 5000);
-
-    return () => clearInterval(interval);
 
 }, []);
 
@@ -511,7 +521,14 @@ useEffect(()=>{
 
     let animation:number;
 
+    let isPaused=false;
+
     const loop=(time:number)=>{
+
+        if(isPaused){
+            animation=requestAnimationFrame(loop);
+            return;
+        }
 
         frames++;
 
@@ -529,9 +546,18 @@ useEffect(()=>{
 
     };
 
+    const handleVisibilityChange=()=>{
+        isPaused=document.hidden;
+    };
+
+    document.addEventListener('visibilitychange',handleVisibilityChange);
+
     animation=requestAnimationFrame(loop);
 
-    return()=>cancelAnimationFrame(animation);
+    return()=>{
+        cancelAnimationFrame(animation);
+        document.removeEventListener('visibilitychange',handleVisibilityChange);
+    };
 
 },[]);
 
@@ -543,19 +569,24 @@ const memory=useMemo(()=>{
 
     }
 
-    const perf=performance as Performance & {
-        memory?:{
-            usedJSHeapSize:number;
+    try {
+        const perf=performance as Performance & {
+            memory?:{
+                usedJSHeapSize:number;
+            };
         };
-    };
 
-    return perf.memory?.usedJSHeapSize
-        ?(
-            perf.memory.usedJSHeapSize
-            /1024
-            /1024
-        ).toFixed(1)
-        :"N/A";
+        return perf.memory?.usedJSHeapSize
+            ?(
+                perf.memory.usedJSHeapSize
+                /1024
+                /1024
+            ).toFixed(1)
+            :"N/A";
+    } catch (error) {
+        console.warn('Memory monitoring not supported in this browser');
+        return "N/A";
+    }
 
 },[]);
 
@@ -608,14 +639,6 @@ const viewportStatistics=useMemo(()=>{
 bounds,
 visibleLayers
 ]);
-
-if(
-typeof window==="undefined"
-){
-
-return null;
-
-}
 
 return (
 
@@ -883,7 +906,7 @@ className="
 absolute
 top-24
 left-5
-z-[999]
+z-[1000]
 "
 >
 
@@ -915,26 +938,8 @@ space-y-1
 
 </div>
 
-</div>
-
-</MapContext.Provider>
-
-);
-
-<div
-className="
-absolute
-top-5
-right-5
-z-[9999]
-"
->
-
-<LoadingOverlay/>
-
-</div>
-
 )
+
 }
 
 <div
@@ -942,7 +947,7 @@ className="
 absolute
 bottom-5
 left-5
-z-[999]
+z-[1001]
 "
 >
 
@@ -1000,7 +1005,7 @@ className="
 absolute
 right-5
 top-48
-z-[999]
+z-[1002]
 "
 >
 
@@ -1060,7 +1065,7 @@ className="
 absolute
 bottom-28
 left-5
-z-[999]
+z-[1003]
 "
 >
 
@@ -1089,7 +1094,7 @@ className="
 absolute
 bottom-5
 right-56
-z-[999]
+z-[1004]
 "
 >
 
@@ -1127,13 +1132,12 @@ I → Indonesia
 
 </div>
 
-
 <div
 className="
 absolute
 top-5
 left-5
-z-[999]
+z-[1005]
 "
 >
 
@@ -1157,3 +1161,10 @@ EcoSnap AI GIS Engine
 
 </div>
 
+</div>
+
+</MapContext.Provider>
+
+);
+
+}
